@@ -1,25 +1,28 @@
-import { HashRouter, Routes, Route, Link } from "react-router-dom";
+import { HashRouter, Routes, Route } from "react-router-dom";
+import Layout from "./components/Layout";
 import Home from "./pages/Home";
+import Modes from "./pages/Modes";
+import Study from "./pages/Study";
+import Explorer from "./pages/Explorer";
+import Settings from "./pages/Settings";
+import Admin from "./pages/Admin";
+import { AppStateProvider } from "./state/appState";
 
 export default function App() {
   return (
     <HashRouter>
-      <header className="w-full border-b bg-white/60 backdrop-blur sticky top-0">
-        <nav className="max-w-5xl mx-auto px-4 py-3 flex items-center gap-4">
-          <Link to="/" className="font-semibold">English Trainer</Link>
-          <div className="ml-auto text-sm text-gray-500">Paso 1 listo</div>
-        </nav>
-      </header>
-
-      <main>
+      <AppStateProvider>
         <Routes>
-          <Route path="/" element={<Home />} />
+          <Route element={<Layout />}>
+            <Route path="/" element={<Home />} />
+            <Route path="/modes" element={<Modes />} />
+            <Route path="/study" element={<Study />} />
+            <Route path="/explorer" element={<Explorer />} />
+            <Route path="/settings" element={<Settings />} />
+            <Route path="/admin" element={<Admin />} />
+          </Route>
         </Routes>
-      </main>
-
-      <footer className="mt-16 py-8 text-center text-xs text-gray-400">
-        © {new Date().getFullYear()} · Personal use
-      </footer>
+      </AppStateProvider>
     </HashRouter>
   );
 }
