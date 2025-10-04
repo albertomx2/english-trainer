@@ -16,8 +16,10 @@ import {
   setProgress,
 } from '../lib/storage'
 import { fetchAndParseXlsx, todayKey } from '../lib/xlsxLoader'
-import { applyAnswer, isDue } from '../lib/srs'
+import { applyAnswer, isDue, applyFailure } from '../lib/srs'
 import type { WordItem, DatasetMeta, SRSEaseQuality } from '../types'
+
+type Verdict = 'exact' | 'near' | 'fail'
 
 type AppState = {
   items: WordItem[]
@@ -39,13 +41,9 @@ type AppState = {
   refreshing: boolean
   refreshFromXlsx: () => Promise<void>
 
-  // SRS helpers
   getDueQueue: (limit: number) => Promise<WordItem[]>
-  answerItem: (
-    itemId: string,
-    quality: SRSEaseQuality,
-    score: number
-  ) => Promise<void>
+  answerItem: (itemId: string, quality: SRSEaseQuality, score: number) => Promise<void>
+  answerGraded: (itemId: string, verdict: Verdict, score: 0|2|3) => Promise<void>
 }
 
 const Ctx = createContext<AppState | null>(null)
@@ -54,7 +52,7 @@ const LS_POINTS = 'et_points'
 const LS_STREAK = 'et_streak'
 const LS_STREAK_LAST = 'et_streak_lastDay'
 const LS_DAILY_GOAL = 'et_daily_goal'
-const LS_DAILY_COUNT_PREFIX = 'et_daily_count_' // et_daily_count_YYYY-MM-DD
+const LS_DAILY_COUNT_PREFIX = 'et_daily_count_'
 
 export function AppStateProvider({ children }: { children: React.ReactNode }) {
   const [items, setItems] = useState<WordItem[]>([])
@@ -62,15 +60,12 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
   const [refreshing, setRefreshing] = useState(false)
   const [lastSync, setLastSync] = useState<string | null>(null)
 
-  // puntos/racha
   const [points, setPoints] = useState<number>(() =>
     Number(localStorage.getItem(LS_POINTS) || 0)
   )
   const [streak, setStreak] = useState<number>(() =>
     Number(localStorage.getItem(LS_STREAK) || 0)
   )
-
-  // meta diaria y contador del día
   const [dailyGoal] = useState<number>(() =>
     Number(localStorage.getItem(LS_DAILY_GOAL) || 20)
   )
@@ -79,12 +74,10 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     return Number(localStorage.getItem(k) || 0)
   })
 
-  // ==== Callbacks ESTABLES ====
-
   const markDailyGoalDone = useCallback(() => {
     const today = todayKey()
     const last = localStorage.getItem(LS_STREAK_LAST)
-    if (last === today) return // ya contado hoy
+    if (last === today) return
     setStreak(prev => {
       const next = prev + 1
       localStorage.setItem(LS_STREAK, String(next))
@@ -111,7 +104,6 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     })
   }, [dailyGoal, markDailyGoalDone])
 
-  // reset contador si cambia el día (poll cada minuto)
   useEffect(() => {
     const id = setInterval(() => {
       const k = LS_DAILY_COUNT_PREFIX + todayKey()
@@ -123,9 +115,7 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
 
   const categories = useMemo(() => {
     const set = new Set<string>()
-    items.forEach(i => {
-      if (i.category) set.add(i.category)
-    })
+    items.forEach(i => { if (i.category) set.add(i.category) })
     return ['Todas', ...Array.from(set).sort()]
   }, [items])
 
@@ -165,41 +155,45 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
-  /** Devuelve una cola de ítems “debidos”, barajada, limitada */
-  const getDueQueue = useCallback(
-    async (limit: number): Promise<WordItem[]> => {
-      const list = filteredItems
-      const progressMap = await getProgressMap(list.map(i => i.id))
-      const due = list.filter(i => {
-        const p = progressMap.get(i.id)
-        return isDue(p?.srs)
-      })
-      // Baraja Fisher-Yates
-      for (let i = due.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1))
-        ;[due[i], due[j]] = [due[j], due[i]]
-      }
-      return due.slice(0, limit)
-    },
-    [filteredItems]
-  )
+  const getDueQueue = useCallback(async (limit: number) => {
+    const list = filteredItems
+    const progressMap = await getProgressMap(list.map(i => i.id))
+    const due = list.filter(i => {
+      const p = progressMap.get(i.id)
+      return isDue(p?.srs)
+    })
+    for (let i = due.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1))
+      ;[due[i], due[j]] = [due[j], due[i]]
+    }
+    return due.slice(0, limit)
+  }, [filteredItems])
 
-  /** Registra respuesta de estudio para un item */
-  const answerItem = useCallback(
-    async (itemId: string, quality: SRSEaseQuality, score: number) => {
-      const prev = await getProgress(itemId)
-      const next = applyAnswer(prev, itemId, quality, score)
-      await setProgress(next)
-      addPoints(score)
-      incDailyCount()
-    },
-    [addPoints, incDailyCount]
-  )
+  const answerItem = useCallback(async (itemId: string, quality: 3|4|5, score: number) => {
+    const prev = await getProgress(itemId)
+    const next = applyAnswer(prev, itemId, quality, score)
+    await setProgress(next)
+    addPoints(score)
+    incDailyCount()
+  }, [addPoints, incDailyCount])
 
-  useEffect(() => {
-    loadInitial()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  // NUEVO: respuesta con veredicto (exact/near/fail) para Type-it
+  const answerGraded = useCallback(async (itemId: string, verdict: Verdict, score: 0|2|3) => {
+    const prev = await getProgress(itemId)
+    let next
+    if (verdict === 'exact') {
+      next = applyAnswer(prev, itemId, 5, score)
+    } else if (verdict === 'near') {
+      next = applyAnswer(prev, itemId, 4, score)
+    } else {
+      next = applyFailure(prev, itemId) // reseteo suave: mañana
+    }
+    await setProgress(next)
+    addPoints(score)
+    incDailyCount()
+  }, [addPoints, incDailyCount])
+
+  useEffect(() => { loadInitial() }, [])
 
   const value: AppState = {
     items,
@@ -219,6 +213,7 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     refreshFromXlsx,
     getDueQueue,
     answerItem,
+    answerGraded,
   }
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>
