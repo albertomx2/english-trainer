@@ -13,12 +13,12 @@ export default function Study() {
 function OtherModes({ mode }: { mode: string }) {
   const { filteredItems } = useAppState()
   return (
-    <div className="max-w-4xl mx-auto p-4">
+    <div className="wrap p-4">
       <h1 className="text-2xl font-semibold mb-1">Estudio</h1>
       <p className="text-gray-600 mb-4">
         Modo: <span className="font-mono">{mode}</span> · Items cargados: {filteredItems.length}
       </p>
-      <div className="rounded-xl border p-4 bg-gray-50">
+      <div className="card bg-gray-50">
         Próximamente enchufamos la lógica de <b>{mode}</b>.
       </div>
     </div>
@@ -36,12 +36,12 @@ function Flashcards() {
 
   useEffect(() => {
     (async () => {
-      const q = await getDueQueue(100) // hasta 100 due
+      const q = await getDueQueue(100)
       setQueue(q)
       setIdx(0)
       setShowBack(false)
     })()
-  }, [getDueQueue]) // ✅ estable gracias a useCallback en AppState
+  }, [getDueQueue])
 
   function nextCard() {
     setShowBack(false)
@@ -62,19 +62,24 @@ function Flashcards() {
   }, [dailyCount, dailyGoal])
 
   return (
-    <div className="max-w-3xl mx-auto p-4">
-      <h1 className="text-2xl font-semibold mb-1">Flashcards (SRS)</h1>
-      <p className="text-gray-600 mb-4">
-        Due cargadas: {queue.length} · Meta diaria: {progress.studied}/{dailyGoal} ({progress.pct}%)
-      </p>
+    <div className="wrap p-4">
+      <h1 className="text-2xl font-semibold mb-2">Flashcards (SRS)</h1>
+
+      <div className="flex flex-wrap items-center gap-2 mb-3">
+        <span className="badge">Due: {queue.length}</span>
+        <span className="badge">Meta: {progress.studied}/{dailyGoal} ({progress.pct}%)</span>
+      </div>
+      <div className="progress mb-6">
+        <div className="progress-bar" style={{ width: `${progress.pct}%` }} />
+      </div>
 
       {!current ? (
-        <div className="rounded-xl border p-6 bg-green-50">
+        <div className="card bg-green-50">
           <div className="font-medium">¡No hay más tarjetas pendientes ahora mismo!</div>
           <div className="text-sm text-green-700">Vuelve más tarde o cambia la categoría.</div>
         </div>
       ) : (
-        <div className="rounded-2xl border p-6">
+        <div className="card">
           <div className="text-sm text-gray-500 mb-2">{idx + 1}/{queue.length}</div>
 
           <div className="text-2xl font-semibold mb-3">{current.word}</div>
@@ -97,35 +102,14 @@ function Flashcards() {
 
           <div className="mt-4 flex gap-2">
             {!showBack ? (
-              <button
-                className="px-4 py-2 rounded-md border bg-white hover:bg-gray-50"
-                onClick={() => setShowBack(true)}
-              >
+              <button className="btn" onClick={() => setShowBack(true)}>
                 Ver respuesta
               </button>
             ) : (
               <>
-                <button
-                  className="px-3 py-2 rounded-md border bg-white hover:bg-gray-50"
-                  onClick={() => onAnswer(3)}
-                  title="Difícil"
-                >
-                  Difícil
-                </button>
-                <button
-                  className="px-3 py-2 rounded-md border bg-white hover:bg-gray-50"
-                  onClick={() => onAnswer(4)}
-                  title="Medio"
-                >
-                  Medio
-                </button>
-                <button
-                  className="px-3 py-2 rounded-md border bg-white hover:bg-gray-50"
-                  onClick={() => onAnswer(5)}
-                  title="Fácil"
-                >
-                  Fácil
-                </button>
+                <button className="btn" onClick={() => onAnswer(3)} title="Difícil">Difícil</button>
+                <button className="btn" onClick={() => onAnswer(4)} title="Medio">Medio</button>
+                <button className="btn btn-primary" onClick={() => onAnswer(5)} title="Fácil">Fácil</button>
               </>
             )}
           </div>
