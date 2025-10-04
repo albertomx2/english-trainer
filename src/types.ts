@@ -26,3 +26,21 @@ export interface DatasetMeta {
   lastSyncDateKey: string;    // YYYY-MM-DD (para recarga diaria)
   rows: number;               // N items almacenados
 }
+
+export type SRSEaseQuality = 3 | 4 | 5 // 3=Difícil, 4=Medio, 5=Fácil
+
+export interface SRSData {
+  easiness: number       // ~2.5 por defecto; baja con respuestas peores
+  interval: number       // días hasta la siguiente revisión
+  repetitions: number    // número de repeticiones correctas consecutivas
+  lastReviewISO?: string | null
+  nextReviewISO?: string | null
+}
+
+export interface ItemProgress {
+  id: string            // mismo id que WordItem.id
+  srs: SRSData
+  correctStreak: number
+  totalAnswers: number
+  lastScore?: number
+}

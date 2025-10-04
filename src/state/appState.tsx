@@ -1,7 +1,23 @@
-import { createContext, useContext, useEffect, useMemo, useState } from 'react'
-import { getAllItems, getMeta, saveItems, setMeta } from '../lib/storage'
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  useCallback,
+} from 'react'
+import {
+  getAllItems,
+  getMeta,
+  saveItems,
+  setMeta,
+  getProgressMap,
+  getProgress,
+  setProgress,
+} from '../lib/storage'
 import { fetchAndParseXlsx, todayKey } from '../lib/xlsxLoader'
-import type { WordItem, DatasetMeta } from '../types'
+import { applyAnswer, isDue } from '../lib/srs'
+import type { WordItem, DatasetMeta, SRSEaseQuality } from '../types'
 
 type AppState = {
   items: WordItem[]
@@ -14,10 +30,22 @@ type AppState = {
   streak: number
   addPoints: (n: number) => void
   markDailyGoalDone: () => void
-  lastSync: string | null
 
+  dailyGoal: number
+  dailyCount: number
+  incDailyCount: () => void
+
+  lastSync: string | null
   refreshing: boolean
   refreshFromXlsx: () => Promise<void>
+
+  // SRS helpers
+  getDueQueue: (limit: number) => Promise<WordItem[]>
+  answerItem: (
+    itemId: string,
+    quality: SRSEaseQuality,
+    score: number
+  ) => Promise<void>
 }
 
 const Ctx = createContext<AppState | null>(null)
@@ -25,7 +53,8 @@ const Ctx = createContext<AppState | null>(null)
 const LS_POINTS = 'et_points'
 const LS_STREAK = 'et_streak'
 const LS_STREAK_LAST = 'et_streak_lastDay'
-const DAILY_GOAL = 20 // tarjetas por defecto
+const LS_DAILY_GOAL = 'et_daily_goal'
+const LS_DAILY_COUNT_PREFIX = 'et_daily_count_' // et_daily_count_YYYY-MM-DD
 
 export function AppStateProvider({ children }: { children: React.ReactNode }) {
   const [items, setItems] = useState<WordItem[]>([])
@@ -34,29 +63,69 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
   const [lastSync, setLastSync] = useState<string | null>(null)
 
   // puntos/racha
-  const [points, setPoints] = useState<number>(() => Number(localStorage.getItem(LS_POINTS) || 0))
-  const [streak, setStreak] = useState<number>(() => Number(localStorage.getItem(LS_STREAK) || 0))
+  const [points, setPoints] = useState<number>(() =>
+    Number(localStorage.getItem(LS_POINTS) || 0)
+  )
+  const [streak, setStreak] = useState<number>(() =>
+    Number(localStorage.getItem(LS_STREAK) || 0)
+  )
 
-  const addPoints = (n: number) => {
-    const v = Math.max(0, points + n)
-    setPoints(v)
-    localStorage.setItem(LS_POINTS, String(v))
-  }
+  // meta diaria y contador del día
+  const [dailyGoal] = useState<number>(() =>
+    Number(localStorage.getItem(LS_DAILY_GOAL) || 20)
+  )
+  const [dailyCount, setDailyCount] = useState<number>(() => {
+    const k = LS_DAILY_COUNT_PREFIX + todayKey()
+    return Number(localStorage.getItem(k) || 0)
+  })
 
-  // muy simple: si hoy marcas meta cumplida, aumenta racha si es día nuevo
-  const markDailyGoalDone = () => {
+  // ==== Callbacks ESTABLES ====
+
+  const markDailyGoalDone = useCallback(() => {
     const today = todayKey()
     const last = localStorage.getItem(LS_STREAK_LAST)
     if (last === today) return // ya contado hoy
-    const next = (last && last !== today) ? streak + 1 : streak + 1
-    setStreak(next)
-    localStorage.setItem(LS_STREAK, String(next))
-    localStorage.setItem(LS_STREAK_LAST, today)
-  }
+    setStreak(prev => {
+      const next = prev + 1
+      localStorage.setItem(LS_STREAK, String(next))
+      localStorage.setItem(LS_STREAK_LAST, today)
+      return next
+    })
+  }, [])
+
+  const addPoints = useCallback((n: number) => {
+    setPoints(prev => {
+      const v = Math.max(0, prev + n)
+      localStorage.setItem(LS_POINTS, String(v))
+      return v
+    })
+  }, [])
+
+  const incDailyCount = useCallback(() => {
+    const k = LS_DAILY_COUNT_PREFIX + todayKey()
+    setDailyCount(prev => {
+      const v = prev + 1
+      localStorage.setItem(k, String(v))
+      if (v >= dailyGoal) markDailyGoalDone()
+      return v
+    })
+  }, [dailyGoal, markDailyGoalDone])
+
+  // reset contador si cambia el día (poll cada minuto)
+  useEffect(() => {
+    const id = setInterval(() => {
+      const k = LS_DAILY_COUNT_PREFIX + todayKey()
+      const stored = Number(localStorage.getItem(k) || 0)
+      setDailyCount(stored)
+    }, 60_000)
+    return () => clearInterval(id)
+  }, [])
 
   const categories = useMemo(() => {
     const set = new Set<string>()
-    items.forEach(i => { if (i.category) set.add(i.category) })
+    items.forEach(i => {
+      if (i.category) set.add(i.category)
+    })
     return ['Todas', ...Array.from(set).sort()]
   }, [items])
 
@@ -96,7 +165,41 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
-  useEffect(() => { loadInitial() }, [])
+  /** Devuelve una cola de ítems “debidos”, barajada, limitada */
+  const getDueQueue = useCallback(
+    async (limit: number): Promise<WordItem[]> => {
+      const list = filteredItems
+      const progressMap = await getProgressMap(list.map(i => i.id))
+      const due = list.filter(i => {
+        const p = progressMap.get(i.id)
+        return isDue(p?.srs)
+      })
+      // Baraja Fisher-Yates
+      for (let i = due.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1))
+        ;[due[i], due[j]] = [due[j], due[i]]
+      }
+      return due.slice(0, limit)
+    },
+    [filteredItems]
+  )
+
+  /** Registra respuesta de estudio para un item */
+  const answerItem = useCallback(
+    async (itemId: string, quality: SRSEaseQuality, score: number) => {
+      const prev = await getProgress(itemId)
+      const next = applyAnswer(prev, itemId, quality, score)
+      await setProgress(next)
+      addPoints(score)
+      incDailyCount()
+    },
+    [addPoints, incDailyCount]
+  )
+
+  useEffect(() => {
+    loadInitial()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const value: AppState = {
     items,
@@ -108,9 +211,14 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     streak,
     addPoints,
     markDailyGoalDone,
+    dailyGoal,
+    dailyCount,
+    incDailyCount,
     lastSync,
     refreshing,
     refreshFromXlsx,
+    getDueQueue,
+    answerItem,
   }
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>
