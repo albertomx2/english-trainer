@@ -1,4 +1,4 @@
-// api/openrouter-proxy.ts (Vercel Edge Function)
+// api/openrouter-proxy.ts  (Vercel Edge Function, sin vercel.json especial)
 export const config = { runtime: "edge" };
 
 function cors(origin: string) {
