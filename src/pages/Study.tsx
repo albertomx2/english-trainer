@@ -24,20 +24,7 @@ export default function Study() {
   return <Flashcards />; // por defecto
 }
 
-function OtherModes({ mode }: { mode: string }) {
-  const { filteredItems } = useAppState()
-  return (
-    <div className="wrap p-4">
-      <h1 className="text-2xl font-semibold mb-1">Estudio</h1>
-      <p className="text-gray-600 mb-4">
-        Modo: <span className="font-mono">{mode}</span> · Items cargados: {filteredItems.length}
-      </p>
-      <div className="card bg-gray-50">
-        Próximamente enchufamos la lógica de <b>{mode}</b>.
-      </div>
-    </div>
-  )
-}
+
 
 /* ===================== FLASHCARDS SRS (con submodos + flip + TTS) ===================== */
 
