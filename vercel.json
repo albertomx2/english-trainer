@@ -1,0 +1,10 @@
+{
+  "functions": {
+    "api/openrouter-proxy.ts": {
+      "runtime": "edge"
+    }
+  },
+  "routes": [
+    { "src": "/api/openrouter-proxy", "dest": "api/openrouter-proxy.ts" }
+  ]
+}
