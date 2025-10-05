@@ -8,8 +8,6 @@ export interface WordItem {
   translation_es: string;
   category: Category;
   seq?: string | number | null;
-
-  // futuros campos de progreso/IA se añadirán aquí
 }
 
 export interface ImportReport {
@@ -43,4 +41,20 @@ export interface ItemProgress {
   correctStreak: number
   totalAnswers: number
   lastScore?: number
+
+  // NUEVO: flags de control manual
+  favorite?: boolean
+  reviewToday?: boolean
 }
+
+export type UseItResult = {
+  score: number;           // 0..5
+  errors: string[];
+  suggested_sentence: string;
+  explanation: string;
+  tags: string[];
+};
+
+// Preferencias de la app
+export type AppTheme = 'light' | 'dark';
+export type DefaultDifficulty = 'easy' | 'medium' | 'hard';

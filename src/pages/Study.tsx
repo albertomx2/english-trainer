@@ -1,18 +1,27 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
+import { evaluateUseItOpenAI, evaluateWithLanguageTool } from "../lib/ai";
+import type { UseItResult } from "../types";
 import { useAppState } from '../state/appState'
 import type { WordItem } from '../types'
 import { hasTTS, loadVoicesReady, pickEnglishVoice, speak, stop } from '../lib/tts'
 import { gradeSpelling, gradeDefinition, type Verdict } from '../lib/fuzzy'
+// NUEVOS imports (además de los que ya tienes)
+import { getProgressMap } from '../lib/storage'
+import type { ItemProgress } from '../types'
+
 
 export default function Study() {
-  const [q] = useSearchParams()
-  const mode = q.get('mode') || 'flashcards'
-  if (mode === 'typeit') return <TypeIt />
-  if (mode === 'cloze') return <Cloze />
-  if (mode === 'rapid') return <RapidFire />
-  if (mode !== 'flashcards') return <OtherModes mode={mode} />
-  return <Flashcards />
+  const [q] = useSearchParams();
+  const mode = q.get('mode') || 'flashcards';
+
+  if (mode === 'typeit') return <TypeIt />;
+  if (mode === 'cloze') return <Cloze />;
+  if (mode === 'rapid') return <RapidFire />;
+  if (mode === 'useit') return <UseIt />;  // NUEVO
+
+
+  return <Flashcards />; // por defecto
 }
 
 function OtherModes({ mode }: { mode: string }) {
@@ -30,12 +39,24 @@ function OtherModes({ mode }: { mode: string }) {
   )
 }
 
-/* ===================== FLASHCARDS SRS (con flip + TTS) ===================== */
+/* ===================== FLASHCARDS SRS (con submodos + flip + TTS) ===================== */
 
 type FrontSide = 'word' | 'definition'
+type SubMode =
+  | 'due'         // pendientes SRS (cola finita)
+  | 'all'         // todos aleatorio (∞)
+  | 'fav'         // favoritos (∞)
+  | 'review'      // revisar hoy (∞)
+  | 'easy'        // últimos marcados "Fácil" (∞)
+  | 'medium'      // "Medio" (∞)
+  | 'hard'        // "Difícil" (∞)
 
 function Flashcards() {
-  const { getDueQueue, answerItem, dailyGoal, dailyCount } = useAppState()
+  const { filteredItems, getDueQueue, answerItem, dailyGoal, dailyCount } = useAppState()
+
+  // Submodo & control "sin límite"
+  const [mode, setMode] = useState<SubMode>('due')
+  const isEndless = mode !== 'due' // todos los submodos salvo "pendientes" son ∞
 
   // Cola de estudio
   const [queue, setQueue] = useState<WordItem[]>([])
@@ -50,15 +71,62 @@ function Flashcards() {
   const [ttsOn, setTtsOn] = useState<boolean>(() => localStorage.getItem('et_tts') === '1')
   const [voice, setVoice] = useState<SpeechSynthesisVoice | null>(null)
 
-  // Carga cola
-  useEffect(() => {
-    (async () => {
-      const q = await getDueQueue(100)
+  // Utilidades
+  function shuffle<T>(arr: T[]) {
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1))
+      ;[arr[i], arr[j]] = [arr[j], arr[i]]
+    }
+    return arr
+  }
+  function sample<T>(arr: T[], n: number) {
+    return arr.length <= n ? arr.slice() : shuffle(arr.slice()).slice(0, n)
+  }
+
+  /** Construye la cola según el submodo seleccionado */
+  async function buildQueue() {
+    setShowBack(false)
+    setIdx(0)
+
+    if (mode === 'due') {
+      const q = await getDueQueue(100) // finito
       setQueue(q)
-      setIdx(0)
-      setShowBack(false)
-    })()
-  }, [getDueQueue])
+      return
+    }
+
+    // Para el resto de modos usamos el pool filtrado por categoría
+    const pool = filteredItems
+    if (pool.length === 0) { setQueue([]); return }
+
+    // Necesitamos los flags y el lastScore de progreso
+    const mp = await getProgressMap(pool.map(i => i.id)) // Map<string, ItemProgress>
+
+    // Filtro por modo
+    let candidates = pool.filter(it => {
+      const p: ItemProgress | undefined = mp.get(it.id)
+      if (mode === 'all') return true
+      if (mode === 'fav') return !!p?.favorite
+      if (mode === 'review') return !!p?.reviewToday
+      const ls = p?.lastScore // 1=difícil, 2=medio, 3=fácil
+      if (mode === 'easy')   return ls === 3
+      if (mode === 'medium') return ls === 2
+      if (mode === 'hard')   return ls === 1
+      return false
+    })
+
+    // Si no hay candidatos, cola vacía
+    if (candidates.length === 0) { setQueue([]); return }
+
+    // Lote inicial (para no cargar cientos a la vez). Luego iremos reponiendo si es ∞.
+    const initial = sample(candidates, 60) // tamaño lote inicial
+    setQueue(initial)
+  }
+
+  // (Re)carga cola cuando cambian: submodo, categoría (filteredItems), etc.
+  useEffect(() => {
+    buildQueue()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, filteredItems, getDueQueue])
 
   // Inicializa voces TTS
   useEffect(() => {
@@ -94,19 +162,6 @@ function Flashcards() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [current, showBack, voice, ttsOn, front])
 
-  function nextCard() {
-    setShowBack(false)
-    setIdx(i => Math.min(i + 1, queue.length))
-    stop()
-  }
-
-  async function onAnswer(quality: 3 | 4 | 5) {
-    if (!current) return
-    const score = quality === 5 ? 3 : quality === 4 ? 2 : 1
-    await answerItem(current.id, quality, score)
-    nextCard()
-  }
-
   function flipSide() {
     setShowBack(false)
     setFront(f => (f === 'word' ? 'definition' : 'word'))
@@ -125,6 +180,30 @@ function Flashcards() {
       ? (front === 'word' ? current.word : (current.definition_en || current.translation_es || ''))
       : (front === 'word' ? (current.example_en || current.definition_en || '') : current.word)
     speak(text, voice)
+  }
+
+ // Avance de tarjeta; si es modo ∞ y hemos llegado al final, recargamos otro lote
+  async function nextCard(): Promise<void> {
+    stop()
+    setShowBack(false)
+    setIdx(i => {
+      const next = i + 1
+      if (next < queue.length) return next
+      // fin del lote
+      if (isEndless) {
+        // repón otro lote manteniendo el submodo actual
+        // (no hace falta await, el setQueue/idx se hará al terminar buildQueue)
+        void buildQueue()
+      }
+      return next // si no es ∞, nos quedamos "sin current"
+    })
+  }
+  async function onAnswer(quality: 3 | 4 | 5) {
+    if (!current) return
+    // puntuación usada para puntos/lastScore (3=fácil,2=medio,1=difícil)
+    const score = quality === 5 ? 3 : quality === 4 ? 2 : 1
+    await answerItem(current.id, quality, score)
+    nextCard()
   }
 
   const progress = useMemo(() => {
@@ -159,12 +238,35 @@ function Flashcards() {
     <div className="wrap p-4">
       <h1 className="text-2xl font-semibold mb-2">Flashcards (SRS)</h1>
 
+      {/* Submodos */}
       <div className="flex flex-wrap items-center gap-2 mb-3">
-        <span className="badge">Due: {queue.length}</span>
+        <label className="text-sm text-gray-600">Submodo:</label>
+        <select
+          className="input"
+          value={mode}
+          onChange={(e)=>setMode(e.target.value as SubMode)}
+          title="Elige la fuente de tarjetas"
+        >
+          <option value="due">Pendientes (SRS)</option>
+          <option value="all">Todos aleatorio (∞)</option>
+          <option value="fav">Favoritos (∞)</option>
+          <option value="review">Revisar hoy (∞)</option>
+          <option value="easy">Fáciles (∞)</option>
+          <option value="medium">Medias (∞)</option>
+          <option value="hard">Difíciles (∞)</option>
+        </select>
+
+        <span className="badge">Lote: {queue.length || 0}</span>
         <span className="badge">Meta: {progress.studied}/{dailyGoal} ({progress.pct}%)</span>
+
+        <button className="btn btn-ghost" onClick={() => buildQueue()} title="Rebarajar/recargar el lote">
+          🔄 Rebarajar
+        </button>
+
         <button className="btn btn-ghost" onClick={flipSide} title="Invertir lado (Word ↔ Definition)">
           ⇆ Lado: {front === 'word' ? 'Palabra→Def' : 'Def→Palabra'}
         </button>
+
         {hasTTS() && (
           <>
             <button className={`btn ${ttsOn ? 'btn-primary' : ''}`} onClick={toggleTTS} title="Activar/desactivar TTS">
@@ -183,8 +285,16 @@ function Flashcards() {
 
       {!current ? (
         <div className="card bg-green-50">
-          <div className="font-medium">¡No hay más tarjetas pendientes ahora mismo!</div>
-          <div className="text-sm text-green-700">Vuelve más tarde o cambia la categoría.</div>
+          <div className="font-medium">
+            {queue.length === 0
+              ? 'No hay tarjetas para este submodo/filtro.'
+              : '¡No hay más tarjetas en este lote!'}
+          </div>
+          <div className="text-sm text-green-700">
+            {isEndless
+              ? 'Pulsa “Rebarajar” para seguir.'
+              : 'Vuelve más tarde o cambia la categoría/submodo.'}
+          </div>
         </div>
       ) : (
         <div className="card">
@@ -219,6 +329,7 @@ function Flashcards() {
     </div>
   )
 }
+
 
 /* ===================== TYPE-IT (entrada libre) ===================== */
 
@@ -691,4 +802,209 @@ function RapidFire() {
       )}
     </div>
   )
+}
+
+/* ============ MODO USE-IT (IA por API; fallback LT, con error visible) ============ */
+function UseIt() {
+  const { filteredItems, answerItem, addPoints } = useAppState();
+
+  const [targetId, setTargetId] = useState<string>(() => filteredItems[0]?.id ?? "");
+  const target = useMemo(
+    () => filteredItems.find((i) => i.id === targetId) ?? filteredItems[0],
+    [filteredItems, targetId]
+  );
+
+  const [sentence, setSentence] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<UseItResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [llmErrorDetail, setLlmErrorDetail] = useState<string | null>(null); // ⬅️ nuevo
+
+  useEffect(() => {
+    if (!target && filteredItems.length) setTargetId(filteredItems[0].id);
+  }, [filteredItems, target]);
+
+  async function onEvaluate() {
+    setError(null);
+    setResult(null);
+    setLlmErrorDetail(null);
+    if (!target) return;
+
+    const text = sentence.trim();
+    if (!text) {
+      setError("Escribe una frase que use la palabra/expresión objetivo.");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      // IA principal (OpenRouter FREE con multi-model fallback)
+      const r = await evaluateUseItOpenAI({
+        word: target.word,
+        sentence: text,
+        definition: target.definition_en,
+        example: target.example_en,
+      });
+      setResult(r);
+    } catch (e: any) {
+      // Mostramos el error real Y además intentamos LT como apoyo
+      const msg = e?.message || "Fallo evaluando la frase (OpenRouter).";
+      setLlmErrorDetail(msg);
+
+      try {
+        const r = await evaluateWithLanguageTool(text);
+        setResult(r);
+        setError("Falló la IA principal; usando corrección gramatical (LanguageTool).");
+      } catch (e2: any) {
+        setError(msg);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Mapear score (0..5) a SRS y puntos
+  function qualityFromScore(s: number): 3 | 4 | 5 {
+    return s >= 4 ? 5 : s >= 2 ? 4 : 3;
+  }
+  function pointsFromScore(s: number): number {
+    return s >= 4 ? 3 : s >= 2 ? 2 : 1;
+  }
+
+  async function applySRS() {
+    if (!target || !result) return;
+    const q = qualityFromScore(result.score);
+    const pts = pointsFromScore(result.score);
+    await answerItem(target.id, q, pts);
+    addPoints(pts);
+  }
+
+  return (
+    <div className="wrap p-4">
+      <h1 className="text-2xl font-semibold mb-2">Use-it (IA)</h1>
+
+      {!target ? (
+        <div className="card bg-yellow-50">No hay elementos filtrados.</div>
+      ) : (
+        <div className="card">
+          {/* Selector del objetivo */}
+          <div className="mb-3 flex flex-col gap-2">
+            <label className="text-sm text-gray-600">Objetivo</label>
+            <div className="flex gap-2 flex-wrap">
+              <select
+                className="input"
+                value={targetId}
+                onChange={(e) => setTargetId(e.target.value)}
+              >
+                {filteredItems.map((i) => (
+                  <option key={i.id} value={i.id}>
+                    {i.word} {i.category ? `· ${i.category}` : ""}
+                  </option>
+                ))}
+              </select>
+              <button
+                className="btn btn-ghost"
+                onClick={() => {
+                  if (!filteredItems.length) return;
+                  const r = filteredItems[Math.floor(Math.random() * filteredItems.length)];
+                  setTargetId(r.id);
+                }}
+              >
+                🎲 Aleatorio
+              </button>
+            </div>
+            <div className="text-sm text-gray-500">
+              <div>
+                <b>Definición:</b> {target.definition_en || "—"}
+              </div>
+              {target.example_en && (
+                <div className="italic text-gray-600">“{target.example_en}”</div>
+              )}
+              {target.translation_es && <div>ES: {target.translation_es}</div>}
+            </div>
+          </div>
+
+          {/* Entrada de la frase */}
+          <label className="text-sm text-gray-600">
+            Tu frase (usa la expresión objetivo)
+          </label>
+          <textarea
+            className="input min-h-28"
+            placeholder={`Escribe una frase con "${target.word}"...`}
+            value={sentence}
+            onChange={(e) => setSentence(e.target.value)}
+          />
+
+          <div className="mt-3 flex gap-2 items-center">
+            <button className="btn btn-primary" onClick={onEvaluate} disabled={loading}>
+              {loading ? "Evaluando..." : "Evaluar"}
+            </button>
+            <button
+              className="btn"
+              onClick={() => {
+                setSentence("");
+                setResult(null);
+                setError(null);
+                setLlmErrorDetail(null);
+              }}
+            >
+              Limpiar
+            </button>
+          </div>
+
+          {/* Si OpenRouter falló, mostramos motivo (sin ocultarlo) */}
+          {llmErrorDetail && (
+            <div className="mt-3 alert alert-error whitespace-pre-wrap">
+              {llmErrorDetail}
+            </div>
+          )}
+
+          {/* Aviso de que está usando LanguageTool */}
+          {error && <div className="mt-4 alert alert-error">{error}</div>}
+
+          {/* Resultado */}
+          {result && (
+            <div className="mt-5 space-y-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="badge">Score: {result.score}/5</span>
+                {result.tags?.slice(0, 5).map((t, i) => (
+                  <span key={i} className="badge">
+                    {t}
+                  </span>
+                ))}
+              </div>
+
+              <div className="rounded-xl border p-3 bg-gray-50">
+                <div className="text-sm text-gray-600 mb-1">Sugerencia</div>
+                <div className="font-medium">{result.suggested_sentence || "—"}</div>
+              </div>
+
+              {result.errors?.length > 0 && (
+                <div className="rounded-xl border p-3">
+                  <div className="text-sm text-gray-600 mb-1">
+                    Errores / Observaciones
+                  </div>
+                  <ul className="list-disc pl-5 text-sm">
+                    {result.errors.map((e, i) => (
+                      <li key={i}>{e}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {result.explanation && (
+                <div className="text-sm text-gray-600">{result.explanation}</div>
+              )}
+
+              <div className="flex gap-2">
+                <button className="btn btn-primary" onClick={applySRS}>
+                  Aplicar al SRS (+puntos)
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }

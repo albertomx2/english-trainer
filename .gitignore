@@ -24,3 +24,8 @@ dist-ssr
 *.sw?
 # Excel lock files
 ~$*
+# Office temp/locks
+~$*.xls*
+~$*.doc*
+~$*.ppt*
+*.log

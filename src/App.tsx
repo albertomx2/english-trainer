@@ -6,12 +6,22 @@ import Study from "./pages/Study";
 import Explorer from "./pages/Explorer";
 import Settings from "./pages/Settings";
 import Admin from "./pages/Admin";
-import { AppStateProvider } from "./state/appState";
+import { AppStateProvider, useAppState } from "./state/appState";
+
+function ThemeApplier() {
+  const { theme } = useAppState();
+  // aplica/actualiza la clase 'dark' en <html>
+  if (typeof document !== 'undefined') {
+    document.documentElement.classList.toggle('dark', theme === 'dark');
+  }
+  return null;
+}
 
 export default function App() {
   return (
     <HashRouter>
       <AppStateProvider>
+        <ThemeApplier />
         <Routes>
           <Route element={<Layout />}>
             <Route path="/" element={<Home />} />
