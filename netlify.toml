@@ -1,7 +1,9 @@
 [build]
-  command  = "npm run build"
-  publish  = "dist"
+  command   = "npm run build"
+  publish   = "dist"
   functions = "netlify/functions"
 
-[functions]
-  node_bundler = "esbuild"
+# Mapea la Edge Function a la misma URL que ya usas en el front
+[[edge_functions]]
+  function = "openrouter-proxy"
+  path = "/.netlify/functions/openrouter-proxy"

@@ -9,6 +9,12 @@ import { gradeSpelling, gradeDefinition, type Verdict } from '../lib/fuzzy'
 // NUEVOS imports (además de los que ya tienes)
 import { getProgressMap } from '../lib/storage'
 import type { ItemProgress } from '../types'
+// Reading mode (IA)
+import type { ReadingExercise, ReadingLevel, ReadingLength } from '../types';
+import { generateReadingExercise } from '../lib/ai';
+import { saveReading, getLastReading, saveReadingResult } from '../lib/storage';
+
+
 
 
 export default function Study() {
@@ -19,6 +25,8 @@ export default function Study() {
   if (mode === 'cloze') return <Cloze />;
   if (mode === 'rapid') return <RapidFire />;
   if (mode === 'useit') return <UseIt />;  // NUEVO
+  if (mode === 'reading') return <ReadingMode />; // ⬅️ NUEVO
+
 
 
   return <Flashcards />; // por defecto
@@ -990,6 +998,246 @@ function UseIt() {
               </div>
             </div>
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ===================== READING MODE (texto + test con IA) ===================== */
+
+function ReadingMode() {
+  const { filteredItems, addPoints, incDailyCount, answerItem, items } = useAppState();
+
+  // Config
+  const [numWords, setNumWords] = useState<5 | 10>(5);
+  const [level, setLevel] = useState<ReadingLevel>('B2');
+  const [length, setLength] = useState<ReadingLength>('medium');
+  const [applyToSRS, setApplyToSRS] = useState(false);
+
+  // Estado
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [ex, setEx] = useState<ReadingExercise | null>(null);
+
+  // Respuestas usuario
+  const [answers, setAnswers] = useState<number[]>([]); // -1 sin contestar
+  const [submitted, setSubmitted] = useState(false);
+  const correctCount = useMemo(() => {
+    if (!ex || !submitted) return 0;
+    return ex.questions.reduce((acc, q, i) => acc + (answers[i] === q.answerIndex ? 1 : 0), 0);
+  }, [ex, answers, submitted]);
+
+  useEffect(() => {
+    // intenta cargar el último generado
+    (async () => {
+      const last = await getLastReading();
+      if (last) {
+        setEx(last);
+        setAnswers(new Array(last.questions.length).fill(-1));
+      }
+    })();
+  }, []);
+
+  function pickRandomWords(n: number): string[] {
+    const pool = filteredItems.length ? filteredItems : items;
+    const arr = [...pool];
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+    return arr.slice(0, n).map(it => it.word);
+  }
+
+  async function onGenerate() {
+    setError(null);
+    setSubmitted(false);
+    setEx(null);
+    setLoading(true);
+    try {
+      const words = pickRandomWords(numWords);
+      const generated = await generateReadingExercise({ words, level, length, dialect: 'en-GB' });
+      await saveReading(generated);
+      setEx(generated);
+      setAnswers(new Array(generated.questions.length).fill(-1));
+    } catch (e: any) {
+      setError(e?.message || 'Fallo generando el ejercicio.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function onSubmit() {
+    if (!ex) return;
+    setSubmitted(true);
+    const score = ex.questions.reduce((acc, q, i) => acc + (answers[i] === q.answerIndex ? 1 : 0), 0);
+    // Puntos: +2 por acierto
+    addPoints(score * 2);
+    // Meta diaria: si ≥4/5, suma 1
+    if (score >= 4) incDailyCount();
+    // (Opcional) Empujar exposición al SRS si va bien
+    if (applyToSRS && score >= 4) {
+      const words = (ex.used_words || []).map(w => w.toLowerCase());
+      for (const it of items) {
+        if (words.includes(it.word.toLowerCase())) {
+          await answerItem(it.id, 4, 2); // medio suave
+        }
+      }
+    }
+    await saveReadingResult({
+      exerciseId: ex.id,
+      answers,
+      scoreCorrect: score,
+      total: ex.questions.length,
+      createdAtISO: new Date().toISOString(),
+    });
+  }
+
+  function setAnswer(qIdx: number, optIdx: number) {
+    setAnswers(prev => {
+      const cp = [...prev];
+      cp[qIdx] = optIdx;
+      return cp;
+    });
+  }
+
+  function highlightPassage(text: string, words: string[]) {
+    if (!words.length) return <p className="whitespace-pre-wrap">{text}</p>;
+    const escaped = words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    const re = new RegExp(`\\b(${escaped.join('|')})\\b`, 'gi');
+    const parts = text.split(re);
+    return (
+      <p className="whitespace-pre-wrap">
+        {parts.map((part, i) =>
+          words.some(w => w.toLowerCase() === part.toLowerCase()) ? (
+            <mark key={i} className="rounded px-1 bg-yellow-100">{part}</mark>
+          ) : (
+            <span key={i}>{part}</span>
+          )
+        )}
+      </p>
+    );
+  }
+
+  return (
+    <div className="wrap p-4">
+      <h1 className="text-2xl font-semibold mb-2">Reading (IA)</h1>
+
+      {/* Configuración */}
+      <div className="card mb-4">
+        <div className="grid sm:grid-cols-4 gap-3">
+          <div>
+            <label className="label">Palabras</label>
+            <select className="input" value={numWords} onChange={e => setNumWords(Number(e.target.value) as 5|10)}>
+              <option value={5}>5 aleatorias</option>
+              <option value={10}>10 aleatorias</option>
+            </select>
+          </div>
+          <div>
+            <label className="label">Nivel</label>
+            <select className="input" value={level} onChange={e => setLevel(e.target.value as ReadingLevel)}>
+              <option value="B1">B1</option>
+              <option value="B2">B2</option>
+              <option value="C1">C1</option>
+            </select>
+          </div>
+          <div>
+            <label className="label">Longitud</label>
+            <select className="input" value={length} onChange={e => setLength(e.target.value as ReadingLength)}>
+              <option value="short">Corta (2–3 párrafos)</option>
+              <option value="medium">Media (3–4)</option>
+              <option value="long">Larga (4–5)</option>
+            </select>
+          </div>
+          <div className="flex items-end gap-2">
+            <button className="btn btn-primary" onClick={onGenerate} disabled={loading}>
+              {loading ? 'Generando…' : 'Generar ejercicio'}
+            </button>
+            {ex && (
+              <button className="btn" onClick={() => setEx(ex)}>
+                Reusar último
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="mt-3 flex items-center gap-2">
+          <input id="applySRS" type="checkbox" className="mr-2" checked={applyToSRS} onChange={e => setApplyToSRS(e.target.checked)} />
+          <label htmlFor="applySRS" className="text-sm text-gray-600">
+            Sumar exposición al SRS si score ≥ 4/5
+          </label>
+        </div>
+      </div>
+
+      {error && <div className="alert alert-error mb-4">{error}</div>}
+
+      {/* Ejercicio */}
+      {ex ? (
+        <div className="space-y-4">
+          <div className="card">
+            <div className="text-sm text-gray-500 mb-2">
+              Nivel: {ex.level} · Longitud: {ex.length} · Modelo: {ex.model}
+            </div>
+            <div className="text-sm text-gray-600 mb-2">
+              Palabras objetivo (marcadas): {ex.used_words?.join(', ') || '—'}
+            </div>
+            {ex.passage.split(/\n{2,}/).map((p, i) => (
+              <div key={i} className="mb-3">
+                {highlightPassage(p, ex.used_words || [])}
+              </div>
+            ))}
+          </div>
+
+          <div className="card">
+            <h2 className="font-semibold mb-3">Preguntas</h2>
+            <ol className="space-y-4 list-decimal pl-5">
+              {ex.questions.map((q, qi) => (
+                <li key={q.id}>
+                  <div className="mb-2">{q.q}</div>
+                  <div className="grid gap-2">
+                    {q.options.map((opt, oi) => {
+                      const chosen = answers[qi] === oi
+                      const correct = submitted && oi === q.answerIndex
+                      const wrong = submitted && chosen && oi !== q.answerIndex
+                      return (
+                        <label key={oi}
+                          className={`flex items-center gap-2 p-2 rounded border
+                          ${chosen ? 'bg-gray-50' : ''}
+                          ${correct ? 'border-green-500' : ''}
+                          ${wrong ? 'border-red-500' : ''}`}>
+                          <input
+                            type="radio"
+                            name={`q${qi}`}
+                            checked={answers[qi] === oi}
+                            onChange={() => setAnswer(qi, oi)}
+                          />
+                          <span>{String.fromCharCode(65 + oi)}. {opt}</span>
+                        </label>
+                      )
+                    })}
+                  </div>
+                  {submitted && q.explanation && (
+                    <div className="mt-1 text-xs text-gray-600">Explicación: {q.explanation}</div>
+                  )}
+                </li>
+              ))}
+            </ol>
+
+            {!submitted ? (
+              <button className="btn btn-primary mt-4" onClick={onSubmit}>Corregir</button>
+            ) : (
+              <div className="mt-4 flex items-center gap-3">
+                <span className="badge">Resultado: {correctCount}/{ex.questions.length}</span>
+                <button className="btn" onClick={() => { setSubmitted(false); setAnswers(new Array(ex.questions.length).fill(-1)); }}>
+                  Reintentar
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      ) : (
+        <div className="card">
+          Genera un ejercicio para empezar.
         </div>
       )}
     </div>

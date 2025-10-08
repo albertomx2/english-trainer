@@ -1,13 +1,21 @@
 import { openDB, type IDBPDatabase, type DBSchema } from 'idb'
-import type { WordItem, DatasetMeta, ItemProgress } from '../types'
+import type {
+  WordItem,
+  DatasetMeta,
+  ItemProgress,
+  ReadingExercise,
+  ReadingResult
+} from '../types'
 
 const DB_NAME = 'english-trainer-db'
-const DB_VERSION = 2 // ⬅️ subimos versión para crear nuevo store
+const DB_VERSION = 3 // ⬅️ subimos a 3 para crear stores de Reading
 
 interface ETDB extends DBSchema {
   items: { key: string; value: WordItem }
   meta: { key: string; value: DatasetMeta }
-  progress: { key: string; value: ItemProgress } // ⬅️ nuevo
+  progress: { key: string; value: ItemProgress }
+  reading: { key: string; value: ReadingExercise }           // NEW
+  reading_results: { key: string; value: ReadingResult }     // NEW
 }
 
 let _dbPromise: Promise<IDBPDatabase<ETDB>> | null = null
@@ -24,6 +32,14 @@ function getDB() {
         }
         if (oldVersion < 2 && !db.objectStoreNames.contains('progress')) {
           db.createObjectStore('progress', { keyPath: 'id' })
+        }
+        if (oldVersion < 3) {
+          if (!db.objectStoreNames.contains('reading')) {
+            db.createObjectStore('reading', { keyPath: 'id' })
+          }
+          if (!db.objectStoreNames.contains('reading_results')) {
+            db.createObjectStore('reading_results', { keyPath: 'exerciseId' })
+          }
         }
       },
     })
@@ -78,4 +94,35 @@ export async function getProgressMap(ids: string[]): Promise<Map<string, ItemPro
   }
   await tx.done
   return map
+}
+
+/* ===== Reading (ejercicio + resultados) ===== */
+
+const LS_LAST_READING_ID = 'et_last_reading_id'
+
+export async function saveReading(ex: ReadingExercise) {
+  const db = await getDB()
+  await db.put('reading', ex)
+  localStorage.setItem(LS_LAST_READING_ID, ex.id)
+}
+
+export async function getReading(id: string): Promise<ReadingExercise | undefined> {
+  const db = await getDB()
+  return db.get('reading', id)
+}
+
+export async function getLastReading(): Promise<ReadingExercise | undefined> {
+  const id = localStorage.getItem(LS_LAST_READING_ID)
+  if (!id) return undefined
+  return getReading(id)
+}
+
+export async function saveReadingResult(res: ReadingResult) {
+  const db = await getDB()
+  await db.put('reading_results', res)
+}
+
+export async function getReadingResult(exerciseId: string): Promise<ReadingResult | undefined> {
+  const db = await getDB()
+  return db.get('reading_results', exerciseId)
 }
