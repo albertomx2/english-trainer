@@ -1,6 +1,6 @@
 // src/lib/ai.ts
-// Motor IA para "Use-it": OpenRouter (rutas FREE) + fallback LanguageTool.
-// ⚠️ La API key queda en claro (uso personal).
+// IA "Use-it": OpenRouter directo desde navegador (modelos FREE) + fallback LanguageTool.
+// Requiere una API key de OpenRouter con "Allow requests from browsers" y Allowed Origins.
 
 export type UseItInput = {
   word: string;
@@ -18,25 +18,22 @@ export type UseItResult = {
 };
 
 /** ====== CONFIG ====== */
-// Tu API key de OpenRouter:
+// 🔑 Tu API key de navegador (permitida para browser y con Allowed Origins puestos)
 const OPENROUTER_API_KEY =
-  "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";
+  "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";
 
 // Endpoint OpenRouter (OpenAI-compatible)
 const OPENROUTER_API_BASE = "https://openrouter.ai/api/v1";
 
-// Lista de rutas FREE (probamos en este orden)
+// Modelos FREE en orden (probamos varios por si alguno devuelve 405/429)
 const OPENROUTER_MODELS = [
   "deepseek/deepseek-chat-v3.1:free",
   "qwen/qwen3-8b:free",
   "deepseek/deepseek-chat-v3-0324:free",
 ] as const;
 
-/** ====== Core request ====== */
-async function callOpenRouterOnce(
-  model: string,
-  input: UseItInput
-): Promise<UseItResult> {
+/** ====== Llamada simple a un modelo ====== */
+async function callOpenRouterOnce(model: string, input: UseItInput): Promise<UseItResult> {
   const system =
     "You are an English writing coach. Evaluate the student's sentence focusing on the TARGET expression. Return ONLY JSON with fields: score(0..5), errors[], suggested_sentence, explanation, tags[]. Be concise.";
 
@@ -61,23 +58,23 @@ async function callOpenRouterOnce(
     `Return strictly valid JSON for this JSON Schema: ${JSON.stringify(schema)}.`,
   ].join("\n");
 
-  // ✅ URL correcta: base + "/chat/completions" (sin duplicar /v1)
   const url = `${OPENROUTER_API_BASE.replace(/\/+$/, "")}/chat/completions`;
+
+  const headers: HeadersInit = {
+    "Content-Type": "application/json",
+    "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
+    // Recomendados por OpenRouter para apps web:
+    "HTTP-Referer": (typeof window !== "undefined" ? window.location.origin : "http://localhost") as string,
+    "X-Title": "English Trainer (Browser)",
+  };
 
   const r = await fetch(url, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${OPENROUTER_API_KEY}`,
-      // Recomendados por OpenRouter para frontends:
-      "HTTP-Referer":
-        (typeof window !== "undefined" ? window.location.origin : "http://localhost") as string,
-      "X-Title": "English Trainer (Personal)",
-    },
+    headers,
     body: JSON.stringify({
       model,
       temperature: 0.2,
-      response_format: { type: "json_object" }, // JSON directo
+      response_format: { type: "json_object" }, // queremos JSON directamente
       messages: [
         { role: "system", content: system },
         { role: "user", content: user },
@@ -93,6 +90,7 @@ async function callOpenRouterOnce(
 
   const data = await r.json();
   const text: string = data?.choices?.[0]?.message?.content ?? "";
+
   try {
     return JSON.parse(text);
   } catch {
@@ -105,9 +103,8 @@ async function callOpenRouterOnce(
 /** ====== API pública: intenta múltiples modelos FREE ====== */
 export async function evaluateUseItOpenAI(input: UseItInput): Promise<UseItResult> {
   if (!OPENROUTER_API_KEY) {
-    throw new Error("No hay API key de OpenRouter configurada en el código.");
+    throw new Error("Falta OPENROUTER_API_KEY en src/lib/ai.ts");
   }
-
   const errors: string[] = [];
   for (const m of OPENROUTER_MODELS) {
     try {
@@ -119,7 +116,7 @@ export async function evaluateUseItOpenAI(input: UseItInput): Promise<UseItResul
   throw new Error("Fallaron las rutas FREE de OpenRouter:\n- " + errors.join("\n- "));
 }
 
-/** ====== Fallback gratuito: LanguageTool (gramática) ====== */
+/** ====== Fallback gratuito: LanguageTool (solo gramática) ====== */
 export async function evaluateWithLanguageTool(
   sentence: string,
   locale: "en-US" | "en-GB" = "en-US"

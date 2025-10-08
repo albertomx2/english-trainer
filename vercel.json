@@ -1,5 +1,0 @@
-{
-  "routes": [
-    { "src": "/api/openrouter-proxy", "dest": "api/openrouter-proxy.ts" }
-  ]
-}
