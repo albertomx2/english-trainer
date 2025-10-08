@@ -1,41 +1,53 @@
 // netlify/functions/openrouter-proxy.ts
-// Proxy simple: añade la Authorization a OpenRouter y maneja CORS.
+// Netlify Edge Function -> Proxy a OpenRouter con CORS correcto
+export const config = { runtime: "edge" };
 
-const ALLOWED = new Set([
-  "http://localhost:5173",
-  "http://127.0.0.1:5173",
-  "https://albertomx2.github.io",
-  "https://english-trainer-new.netlify.app", // ← TU dominio Netlify
-]);
-function cors(origin: string) {
+// Genera cabeceras CORS; acepta exactamente los headers pedidos en el preflight
+function cors(origin: string, req?: Request) {
+  const acrh = req?.headers.get("access-control-request-headers");
   return {
-    "Access-Control-Allow-Origin": ALLOWED.has(origin) ? origin : "*",
+    "Access-Control-Allow-Origin": origin || "*",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Headers": acrh || "Content-Type, X-Title, HTTP-Referer",
     "Access-Control-Max-Age": "86400",
+    "Vary": "Origin, Access-Control-Request-Method, Access-Control-Request-Headers",
   };
 }
 
-export const handler = async (event: any) => {
-  const origin = event.headers?.origin || "";
-  const headers = cors(origin);
+// Orígenes permitidos (ajusta si añades otro dominio)
+const ALLOWED = new Set<string>([
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+  "https://albertomx2.github.io",
+  "https://english-trainer-new.netlify.app",
+]);
 
-  if (event.httpMethod === "OPTIONS") {
-    return { statusCode: 204, headers, body: "" };
+export default async function handler(req: Request): Promise<Response> {
+  const origin = req.headers.get("origin") || "";
+
+  // Preflight
+  if (req.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: cors(origin, req) });
   }
+
+  // Origen no permitido
   if (!ALLOWED.has(origin)) {
-    return { statusCode: 403, headers, body: "Forbidden" };
-  }
-  if (event.httpMethod !== "POST") {
-    return { statusCode: 405, headers, body: "Only POST" };
+    return new Response("Forbidden", { status: 403, headers: cors(origin, req) });
   }
 
-  const body = event.body || "{}";
+  // Solo POST
+  if (req.method !== "POST") {
+    return new Response("Only POST", { status: 405, headers: cors(origin, req) });
+  }
 
+  // Cuerpo tal cual desde el front
+  const body = await req.text();
+
+  // Llamada a OpenRouter (la key vive en Netlify → Environment variables)
   const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
-      "Authorization": `Bearer ${process.env.OPENROUTER_KEY}`, // 👈 viene de Netlify
+      "Authorization": `Bearer ${process.env.OPENROUTER_KEY!}`,
       "Content-Type": "application/json",
       "X-Title": "English Trainer (Netlify)",
     },
@@ -43,9 +55,8 @@ export const handler = async (event: any) => {
   });
 
   const txt = await resp.text();
-  return {
-    statusCode: resp.status,
-    headers: { ...headers, "Content-Type": "application/json" },
-    body: txt,
-  };
-};
+  return new Response(txt, {
+    status: resp.status,
+    headers: { ...cors(origin, req), "Content-Type": "application/json" },
+  });
+}
