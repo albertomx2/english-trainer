@@ -5,8 +5,8 @@ const ALLOWED = new Set([
   "http://localhost:5173",
   "http://127.0.0.1:5173",
   "https://albertomx2.github.io",
+  "https://english-trainer-new.netlify.app", // ← TU dominio Netlify
 ]);
-
 function cors(origin: string) {
   return {
     "Access-Control-Allow-Origin": ALLOWED.has(origin) ? origin : "*",

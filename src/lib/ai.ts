@@ -1,39 +1,22 @@
 // src/lib/ai.ts
-// IA "Use-it": OpenRouter directo desde navegador (modelos FREE) + fallback LanguageTool.
-// Requiere una API key de OpenRouter con "Allow requests from browsers" y Allowed Origins.
-
 export type UseItInput = {
-  word: string;
-  sentence: string;
-  definition?: string;
-  example?: string;
+  word: string; sentence: string; definition?: string; example?: string;
 };
-
 export type UseItResult = {
-  score: number;           // 0..5
-  errors: string[];
-  suggested_sentence: string;
-  explanation: string;
-  tags: string[];
+  score: number; errors: string[]; suggested_sentence: string; explanation: string; tags: string[];
 };
 
-/** ====== CONFIG ====== */
-// 🔑 Tu API key de navegador (permitida para browser y con Allowed Origins puestos)
-const OPENROUTER_API_KEY =
-  "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";
+// 👇 PON AQUÍ tu dominio Netlify
+const OPENROUTER_PROXY_URL = "https://english-trainer-new.netlify.app/.netlify/functions/openrouter-proxy";
 
-// Endpoint OpenRouter (OpenAI-compatible)
-const OPENROUTER_API_BASE = "https://openrouter.ai/api/v1";
 
-// Modelos FREE en orden (probamos varios por si alguno devuelve 405/429)
 const OPENROUTER_MODELS = [
   "deepseek/deepseek-chat-v3.1:free",
   "qwen/qwen3-8b:free",
   "deepseek/deepseek-chat-v3-0324:free",
 ] as const;
 
-/** ====== Llamada simple a un modelo ====== */
-async function callOpenRouterOnce(model: string, input: UseItInput): Promise<UseItResult> {
+async function callProxyOnce(model: string, input: UseItInput): Promise<UseItResult> {
   const system =
     "You are an English writing coach. Evaluate the student's sentence focusing on the TARGET expression. Return ONLY JSON with fields: score(0..5), errors[], suggested_sentence, explanation, tags[]. Be concise.";
 
@@ -58,23 +41,13 @@ async function callOpenRouterOnce(model: string, input: UseItInput): Promise<Use
     `Return strictly valid JSON for this JSON Schema: ${JSON.stringify(schema)}.`,
   ].join("\n");
 
-  const url = `${OPENROUTER_API_BASE.replace(/\/+$/, "")}/chat/completions`;
-
-  const headers: HeadersInit = {
-    "Content-Type": "application/json",
-    "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
-    // Recomendados por OpenRouter para apps web:
-    "HTTP-Referer": (typeof window !== "undefined" ? window.location.origin : "http://localhost") as string,
-    "X-Title": "English Trainer (Browser)",
-  };
-
-  const r = await fetch(url, {
+  const r = await fetch(OPENROUTER_PROXY_URL, {
     method: "POST",
-    headers,
+    headers: { "Content-Type": "application/json", "X-Title": "English Trainer (Personal)" },
     body: JSON.stringify({
       model,
       temperature: 0.2,
-      response_format: { type: "json_object" }, // queremos JSON directamente
+      response_format: { type: "json_object" },
       messages: [
         { role: "system", content: system },
         { role: "user", content: user },
@@ -85,73 +58,40 @@ async function callOpenRouterOnce(model: string, input: UseItInput): Promise<Use
 
   if (!r.ok) {
     const text = await r.text().catch(() => "");
-    throw new Error(`OpenRouter ${r.status} on ${model}: ${text || r.statusText}`);
+    throw new Error(`Proxy → ${r.status}: ${text || r.statusText}`);
   }
 
   const data = await r.json();
   const text: string = data?.choices?.[0]?.message?.content ?? "";
-
   try {
     return JSON.parse(text);
   } catch {
     const m = text.match(/\{[\s\S]*\}$/);
     if (m) return JSON.parse(m[0]);
-    throw new Error(`Respuesta no JSON del modelo (${model}). Raw: ${text.slice(0, 200)}…`);
+    throw new Error(`Modelo ${model}: respuesta no JSON. Raw: ${text.slice(0, 200)}…`);
   }
 }
 
-/** ====== API pública: intenta múltiples modelos FREE ====== */
 export async function evaluateUseItOpenAI(input: UseItInput): Promise<UseItResult> {
-  if (!OPENROUTER_API_KEY) {
-    throw new Error("Falta OPENROUTER_API_KEY en src/lib/ai.ts");
-  }
-  const errors: string[] = [];
+  const errs: string[] = [];
   for (const m of OPENROUTER_MODELS) {
-    try {
-      return await callOpenRouterOnce(m, input);
-    } catch (e: any) {
-      errors.push(e?.message || String(e));
-    }
+    try { return await callProxyOnce(m, input); }
+    catch (e: any) { errs.push(e?.message || String(e)); }
   }
-  throw new Error("Fallaron las rutas FREE de OpenRouter:\n- " + errors.join("\n- "));
+  throw new Error("Falló OpenRouter vía proxy:\n- " + errs.join("\n- "));
 }
 
-/** ====== Fallback gratuito: LanguageTool (solo gramática) ====== */
-export async function evaluateWithLanguageTool(
-  sentence: string,
-  locale: "en-US" | "en-GB" = "en-US"
-): Promise<UseItResult> {
-  const params = new URLSearchParams();
-  params.set("text", sentence);
-  params.set("language", locale);
-
+// Fallback gratis ya lo tienes:
+export async function evaluateWithLanguageTool(sentence: string, locale: "en-US" | "en-GB" = "en-US"): Promise<UseItResult> {
+  const params = new URLSearchParams(); params.set("text", sentence); params.set("language", locale);
   const r = await fetch("https://api.languagetool.org/v2/check", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: params.toString(),
+    method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: params.toString()
   });
   const data = await r.json();
-
-  const errors =
-    (data.matches as any[] | undefined)?.slice(0, 10).map((m) => {
-      const cat = m?.rule?.category?.name ?? "Issue";
-      return `${cat}: ${m?.message ?? ""}`.trim();
-    }) ?? [];
-
+  const errors = (data.matches as any[] | undefined)?.slice(0, 10).map(m => `${m?.rule?.category?.name ?? "Issue"}: ${m?.message ?? ""}`.trim()) ?? [];
   let suggestion = sentence;
-  const firstRep = (data.matches || []).find((m: any) => m.replacements?.[0]?.value);
-  if (firstRep?.replacements?.[0]?.value) {
-    const rep = firstRep.replacements[0].value as string;
-    suggestion = `Suggestion: ${rep}\nOriginal: ${sentence}`;
-  }
-
+  const first = (data.matches || []).find((m: any) => m.replacements?.[0]?.value);
+  if (first?.replacements?.[0]?.value) suggestion = `Suggestion: ${first.replacements[0].value}\nOriginal: ${sentence}`;
   const score = errors.length === 0 ? 4 : errors.length <= 2 ? 3 : 1;
-  return {
-    score,
-    errors,
-    suggested_sentence: suggestion,
-    explanation:
-      "Grammar/spelling check (LanguageTool). Does not validate semantic fit to the target expression.",
-    tags: ["grammar", "spelling"],
-  };
+  return { score, errors, suggested_sentence: suggestion, explanation: "Grammar/spelling check (LanguageTool). Does not validate semantic fit to the target expression.", tags: ["grammar", "spelling"] };
 }
