@@ -58,3 +58,36 @@ export type UseItResult = {
 // Preferencias de la app
 export type AppTheme = 'light' | 'dark';
 export type DefaultDifficulty = 'easy' | 'medium' | 'hard';
+
+
+/* ===== Reading mode ===== */
+
+export type ReadingLevel = 'B1' | 'B2' | 'C1';
+export type ReadingLength = 'short' | 'medium' | 'long';
+
+export interface ReadingQuestion {
+  id: string;
+  q: string;
+  options: [string, string, string, string];
+  answerIndex: 0 | 1 | 2 | 3;
+  explanation?: string;
+}
+
+export interface ReadingExercise {
+  id: string; // p.ej. Date.now().toString()
+  level: ReadingLevel;
+  length: ReadingLength;
+  model: string;           // modelo usado
+  used_words: string[];    // palabras usadas (texto)
+  passage: string;         // 2-5 párrafos en texto plano (separados por \n\n)
+  questions: ReadingQuestion[]; // siempre 5
+  createdAtISO: string;
+}
+
+export interface ReadingResult {
+  exerciseId: string;
+  answers: number[];      // índices 0..3 o -1 si sin contestar
+  scoreCorrect: number;
+  total: number;          // normalmente 5
+  createdAtISO: string;
+}
