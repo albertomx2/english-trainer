@@ -10,10 +10,13 @@ export default function Modes() {
         <ModeCard title="Cloze" to="/study?mode=cloze" desc="Completa la frase del ejemplo." />
         <ModeCard title="Rapid Fire" to="/study?mode=rapid" desc="Respuestas rápidas 30/60s." />
         <ModeCard title="Use-it (IA)" to="/study?mode=useit" desc="Escribe una frase y te doy feedback." />
+        {/* NUEVO */}
+        <ModeCard title="Reading (IA)" to="/study?mode=reading" desc="Genera un texto con tus palabras y 5 preguntas tipo test." />
       </div>
     </div>
   )
 }
+
 function ModeCard({ title, desc, to }: { title: string; desc: string; to: string }) {
   return (
     <Link to={to} className="block border rounded-xl p-4 hover:bg-gray-50">
