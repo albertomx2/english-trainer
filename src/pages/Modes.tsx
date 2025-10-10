@@ -12,6 +12,7 @@ export default function Modes() {
         <ModeCard title="Use-it (IA)" to="/study?mode=useit" desc="Escribe una frase y te doy feedback." />
         {/* NUEVO */}
         <ModeCard title="Reading (IA)" to="/study?mode=reading" desc="Genera un texto con tus palabras y 5 preguntas tipo test." />
+        <ModeCard title="Listening (IA/YouTube)" to="/study?mode=listen" desc="Escucha y responde. IA o vídeo de YouTube." />
       </div>
     </div>
   )

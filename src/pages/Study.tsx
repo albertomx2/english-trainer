@@ -12,6 +12,7 @@ import type { ItemProgress } from '../types'
 // Reading mode (IA)
 import type { ReadingExercise, ReadingLevel, ReadingLength } from '../types';
 import { generateReadingExercise } from '../lib/ai';
+import { generateMCQsFromText } from '../lib/ai';
 import { saveReading, getLastReading, saveReadingResult } from '../lib/storage';
 
 
@@ -26,8 +27,7 @@ export default function Study() {
   if (mode === 'rapid') return <RapidFire />;
   if (mode === 'useit') return <UseIt />;  // NUEVO
   if (mode === 'reading') return <ReadingMode />; // ⬅️ NUEVO
-
-
+  if (mode === 'listen') return <ListeningMode />;
 
   return <Flashcards />; // por defecto
 }
@@ -1242,4 +1242,208 @@ function ReadingMode() {
       )}
     </div>
   );
+}
+
+/* ===================== LISTENING MODE (IA / YouTube) ===================== */
+
+function ListeningMode() {
+  const { addPoints, incDailyCount } = useAppState()
+
+  type Source = 'ai' | 'youtube'
+  const [source, setSource] = useState<Source>('ai')
+
+  // IA config (reutiliza Reading)
+  const [level, setLevel] = useState<ReadingLevel>('B2')
+  const [length, setLength] = useState<ReadingLength>('medium')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  // YouTube config
+  const [ytUrl, setYtUrl] = useState('')
+
+  // Ejercicio activo (reutilizamos estructura de Reading)
+  const [passage, setPassage] = useState<string>('')    // oculto hasta corregir
+  const [questions, setQuestions] = useState<ReadingExercise['questions']>([])
+  const [model, setModel] = useState<string>('')
+
+  // respuestas usuario
+  const [answers, setAnswers] = useState<number[]>([])
+  const [submitted, setSubmitted] = useState(false)
+  const correctCount = useMemo(
+    () => submitted ? questions.reduce((a,q,i)=>a+(answers[i]===q.answerIndex?1:0),0) : 0,
+    [submitted, answers, questions]
+  )
+
+  // TTS
+  const [voice, setVoice] = useState<SpeechSynthesisVoice | null>(null)
+  const [speaking, setSpeaking] = useState(false)
+
+  useEffect(() => { if (hasTTS()) loadVoicesReady().then(vs=>setVoice(pickEnglishVoice(vs))) }, [])
+
+  function play() {
+    if (!hasTTS() || !passage) return
+    stop()
+    speak(passage, voice)
+    setSpeaking(true)
+  }
+  function stopAudio() { stop(); setSpeaking(false) }
+
+  function resetQA(qs: ReadingExercise['questions']) {
+    setQuestions(qs)
+    setAnswers(new Array(qs.length).fill(-1))
+    setSubmitted(false)
+  }
+
+  async function generateAI() {
+    setError(null); setLoading(true)
+    try {
+      // reciclamos tu generador de Reading
+      const ex = await generateReadingExercise({
+        words: [], // no forzamos palabras aquí
+        level, length, dialect: 'en-GB',
+      } as any) // el generador ignora words si está vacío en tu versión
+      setPassage(ex.passage)
+      setModel(ex.model)
+      resetQA(ex.questions)
+      // auto play
+      play()
+    } catch (e: any) {
+      setError(e?.message || 'Fallo generando audio IA')
+    } finally { setLoading(false) }
+  }
+
+  async function generateFromYouTube() {
+    setError(null); setLoading(true)
+    try {
+      const url = new URL(ytUrl) // validación básica
+      const endpoint = `https://english-trainer-new.netlify.app/.netlify/functions/yt-transcript?url=${encodeURIComponent(url.toString())}`
+      const r = await fetch(endpoint)
+      if (!r.ok) throw new Error(await r.text())
+      const data = await r.json()
+      const text: string = data.text || ''
+      if (!text) throw new Error('Sin transcripción disponible.')
+      setPassage(text)
+
+      const mcqs = await generateMCQsFromText({ text, level })
+      setModel(mcqs.model)
+      resetQA(mcqs.questions)
+      play()
+    } catch (e: any) {
+      setError(e?.message || 'Fallo con la transcripción de YouTube')
+    } finally { setLoading(false) }
+  }
+
+  function setAnswer(qIdx: number, optIdx: number) {
+    setAnswers(prev => { const cp = [...prev]; cp[qIdx] = optIdx; return cp })
+  }
+
+  function onSubmit() {
+    setSubmitted(true)
+    const score = questions.reduce((a,q,i)=>a+(answers[i]===q.answerIndex?1:0),0)
+    addPoints(score * 2)
+    if (score >= 4) incDailyCount()
+    stopAudio()
+  }
+
+  return (
+    <div className="wrap p-4">
+      <h1 className="text-2xl font-semibold mb-2">Listening (IA / YouTube)</h1>
+
+      <div className="card mb-4">
+        <div className="flex flex-wrap gap-3 items-end">
+          <div>
+            <label className="label">Fuente</label>
+            <select className="input" value={source} onChange={e=>setSource(e.target.value as any)}>
+              <option value="ai">Audio generado por IA</option>
+              <option value="youtube">Vídeo de YouTube</option>
+            </select>
+          </div>
+
+          {source === 'ai' ? (
+            <>
+              <div>
+                <label className="label">Nivel</label>
+                <select className="input" value={level} onChange={e=>setLevel(e.target.value as ReadingLevel)}>
+                  <option value="B1">B1</option><option value="B2">B2</option><option value="C1">C1</option>
+                </select>
+              </div>
+              <div>
+                <label className="label">Longitud</label>
+                <select className="input" value={length} onChange={e=>setLength(e.target.value as ReadingLength)}>
+                  <option value="short">Corta</option><option value="medium">Media</option><option value="long">Larga</option>
+                </select>
+              </div>
+              <button className="btn btn-primary" onClick={generateAI} disabled={loading}>
+                {loading ? 'Generando…' : 'Generar y reproducir'}
+              </button>
+            </>
+          ) : (
+            <>
+              <div className="min-w-[280px]">
+                <label className="label">YouTube URL</label>
+                <input className="input" value={ytUrl} onChange={e=>setYtUrl(e.target.value)} placeholder="https://www.youtube.com/watch?v=..." />
+              </div>
+              <button className="btn btn-primary" onClick={generateFromYouTube} disabled={loading || !ytUrl}>
+                {loading ? 'Procesando…' : 'Transcribir y reproducir'}
+              </button>
+            </>
+          )}
+
+          <div className="flex gap-2 ml-auto">
+            <button className="btn" onClick={play} disabled={!passage}>▶️ Reproducir</button>
+            <button className="btn" onClick={stopAudio} disabled={!speaking}>⏹️ Parar</button>
+          </div>
+        </div>
+
+        {model && <div className="text-xs text-gray-500 mt-2">Modelo: {model}</div>}
+      </div>
+
+      {error && <div className="alert alert-error mb-4">{error}</div>}
+
+      {questions.length ? (
+        <div className="card">
+          <h2 className="font-semibold mb-3">Preguntas</h2>
+          <ol className="space-y-4 list-decimal pl-5">
+            {questions.map((q, qi) => (
+              <li key={q.id}>
+                <div className="mb-2">{q.q}</div>
+                <div className="grid gap-2">
+                  {q.options.map((opt, oi) => {
+                    const chosen = answers[qi] === oi
+                    const correct = submitted && oi === q.answerIndex
+                    const wrong = submitted && chosen && oi !== q.answerIndex
+                    return (
+                      <label key={oi}
+                        className={`flex items-center gap-2 p-2 rounded border
+                        ${chosen ? 'bg-gray-50' : ''} ${correct ? 'border-green-500' : ''} ${wrong ? 'border-red-500' : ''}`}>
+                        <input type="radio" name={`q${qi}`} checked={answers[qi]===oi} onChange={()=>setAnswer(qi, oi)} />
+                        <span>{String.fromCharCode(65+oi)}. {opt}</span>
+                      </label>
+                    )
+                  })}
+                </div>
+                {submitted && q.explanation && (
+                  <div className="mt-1 text-xs text-gray-600">Explicación: {q.explanation}</div>
+                )}
+              </li>
+            ))}
+          </ol>
+
+          {!submitted ? (
+            <button className="btn btn-primary mt-4" onClick={onSubmit}>Corregir</button>
+          ) : (
+            <div className="mt-4 space-y-3">
+              <span className="badge">Resultado: {correctCount}/{questions.length}</span>
+              <details className="mt-2">
+                <summary className="cursor-pointer">Ver transcripción</summary>
+                <p className="mt-2 whitespace-pre-wrap text-sm text-gray-700">{passage}</p>
+              </details>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="card">Genera un audio para empezar.</div>
+      )}
+    </div>
+  )
 }

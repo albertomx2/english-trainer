@@ -308,3 +308,73 @@ export async function generateReadingExercise(opts: {
   }
   throw new Error(`Reading (IA) no disponible:\n- ${proxyErrors.join("\n- ")}`);
 }
+
+// === MCQs desde una transcripción (para Listening/YouTube) ===
+export async function generateMCQsFromText(opts: {
+  text: string;
+  level: ReadingLevel;
+  model?: string;
+}): Promise<Pick<ReadingExercise, 'questions' | 'model'>> {
+  const model = opts.model ?? "deepseek/deepseek-chat-v3.1:free";
+  const system = `
+You are an ESL exam item-writer. Create high-quality MCQs (close distractors).
+Return VALID JSON ONLY.
+`.trim();
+  const user = `
+TEXT:
+"""
+${opts.text.slice(0, 6000)}
+"""
+
+TASK:
+- Write exactly 5 MCQs for level ${opts.level}.
+- ≥3 must be "inference" or "paraphrase".
+- Avoid quote-matching; make distractors plausible and close in meaning.
+
+OUTPUT JSON:
+{
+  "questions": [
+    { "id":"q1", "q":"...", "options": ["A","B","C","D"], "answerIndex": 0, "explanation":"..." },
+    ...
+  ],
+  "model": "${model}"
+}
+`.trim();
+
+  const proxyErrors: string[] = [];
+  for (const proxy of OPENROUTER_PROXIES) {
+    try {
+      const r = await fetch(proxy, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model,
+          temperature: 0.2,
+          response_format: { type: "json_object" },
+          messages: [{ role: "system", content: system }, { role: "user", content: user }],
+          max_tokens: 1200,
+        }),
+      });
+      if (!r.ok) throw new Error(await r.text().catch(()=>r.statusText));
+      const data = await r.json();
+      const raw = data?.choices?.[0]?.message?.content ?? "";
+      const json = JSON.parse(raw.match(/\{[\s\S]*\}$/)?.[0] ?? raw);
+      if (!Array.isArray(json.questions) || json.questions.length !== 5) {
+        throw new Error("Expected exactly 5 questions.");
+      }
+      return {
+        model: json.model || model,
+        questions: json.questions.map((q: any, i: number) => ({
+          id: String(q.id || `q${i+1}`),
+          q: String(q.q || ""),
+          options: (Array.isArray(q.options) ? q.options : ["A","B","C","D"]).map(String) as [string,string,string,string],
+          answerIndex: (typeof q.answerIndex === 'number' ? q.answerIndex : 0) as 0|1|2|3,
+          explanation: q.explanation ? String(q.explanation) : undefined,
+        })),
+      };
+    } catch (e: any) {
+      proxyErrors.push(`${proxy}: ${e?.message || String(e)}`);
+    }
+  }
+  throw new Error(`MCQs generator not available:\n- ${proxyErrors.join("\n- ")}`);
+}
