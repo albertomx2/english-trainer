@@ -378,3 +378,132 @@ OUTPUT JSON:
   }
   throw new Error(`MCQs generator not available:\n- ${proxyErrors.join("\n- ")}`);
 }
+
+// ===== Enriquecedor de palabra (def, example, tradu): robusto con fallbacks =====
+type EnrichOut = { definition_en: string; example_en: string; translation_es: string };
+
+const ENRICH_MODELS = [
+  "deepseek/deepseek-chat-v3.1:free",
+  "qwen/qwen3-8b:free",
+  "deepseek/deepseek-chat-v3-0324:free",
+] as const;
+
+export async function enrichWordWithAI(word: string): Promise<EnrichOut> {
+  const system = `
+You are a concise English lexicographer.
+Return STRICT JSON only. No markdown, no backticks, no extra prose.
+  `.trim();
+
+  const schema = {
+    type: "object",
+    properties: {
+      definition_en: { type: "string" },
+      example_en: { type: "string" },
+      translation_es: { type: "string" },
+    },
+    required: ["definition_en", "example_en", "translation_es"],
+    additionalProperties: false,
+  };
+
+  const user = `
+WORD: "${word}"
+
+Return a compact definition in English (<= 25 words).
+Return ONE natural example sentence in English (<= 18 words), using a common sense meaning (not encyclopedic).
+Return a SHORT Spanish translation (1–3 words, lowercase, no explanations).
+
+JSON schema to follow exactly:
+${JSON.stringify(schema)}
+  `.trim();
+
+  // llamada interna (proxy + modelo)
+  async function tryOnce(proxyUrl: string, model: string): Promise<EnrichOut> {
+    const r = await fetch(proxyUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model,
+        temperature: 0.2,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ],
+        max_tokens: 300,
+      }),
+    });
+
+    if (!r.ok) {
+      const t = await r.text().catch(() => "");
+      throw new Error(`${r.status}: ${t || r.statusText}`);
+    }
+
+    const data = await r.json();
+    const content: string = data?.choices?.[0]?.message?.content ?? "";
+
+    // 1) intento parseo directo
+    try {
+      const j = JSON.parse(content);
+      return {
+        definition_en: String(j.definition_en || "").trim(),
+        example_en: String(j.example_en || "").trim(),
+        translation_es: String(j.translation_es || "").trim(),
+      };
+    } catch {
+      // 2) rescatar último bloque {...} de la respuesta
+      const m = content.match(/\{[\s\S]*\}$/);
+      if (m) {
+        const j = JSON.parse(m[0]);
+        return {
+          definition_en: String(j.definition_en || "").trim(),
+          example_en: String(j.example_en || "").trim(),
+          translation_es: String(j.translation_es || "").trim(),
+        };
+      }
+      // 3) fallback “best effort” desde texto (muy defensivo)
+      const def = (content.match(/definition[_\s]*[:\-]\s*(.+)/i)?.[1] || "")
+        .split(/\n/)[0].trim();
+      const ex = (content.match(/example[_\s]*[:\-]\s*(.+)/i)?.[1] || "")
+        .split(/\n/)[0].replace(/^["“]|["”]$/g, "").trim();
+      const es = (content.match(/translation[_\s]*[:\-]\s*(.+)/i)?.[1] || "")
+        .split(/[.;\n,]/)[0].toLowerCase().trim();
+
+      if (def || ex || es) {
+        return {
+          definition_en: def,
+          example_en: ex,
+          translation_es: es,
+        };
+      }
+      throw new Error("Respuesta sin JSON ni datos rescatables.");
+    }
+  }
+
+  const errors: string[] = [];
+  for (const proxy of OPENROUTER_PROXIES) {
+    for (const model of ENRICH_MODELS) {
+      try {
+        const out = await tryOnce(proxy, model);
+
+        // saneo extra de traducción (corta)
+        const tidyEs = (s: string) =>
+          s.replace(/\(.*?\)/g, "")
+            .split(/[;/,\.]/)[0]
+            .split(/\s+/)
+            .slice(0, 3)
+            .join(" ")
+            .toLowerCase()
+            .trim();
+
+        return {
+          definition_en: out.definition_en || "",
+          example_en: out.example_en || "",
+          translation_es: tidyEs(out.translation_es || ""),
+        };
+      } catch (e: any) {
+        errors.push(`${proxy} • ${model}: ${e?.message || String(e)}`);
+      }
+    }
+  }
+  throw new Error(`enrichWordWithAI fallo:\n- ${errors.join("\n- ")}`);
+}

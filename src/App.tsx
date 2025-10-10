@@ -7,6 +7,7 @@ import Explorer from "./pages/Explorer";
 import Settings from "./pages/Settings";
 import Admin from "./pages/Admin";
 import { AppStateProvider, useAppState } from "./state/appState";
+import AddWord from './pages/AddWord'
 
 function ThemeApplier() {
   const { theme } = useAppState();
@@ -30,6 +31,7 @@ export default function App() {
             <Route path="/explorer" element={<Explorer />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/admin" element={<Admin />} />
+            <Route path="/add-word" element={<AddWord />} />
           </Route>
         </Routes>
       </AppStateProvider>

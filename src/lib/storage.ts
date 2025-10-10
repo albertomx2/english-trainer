@@ -8,14 +8,14 @@ import type {
 } from '../types'
 
 const DB_NAME = 'english-trainer-db'
-const DB_VERSION = 3 // ⬅️ subimos a 3 para crear stores de Reading
+const DB_VERSION = 3 // para crear stores de Reading
 
 interface ETDB extends DBSchema {
   items: { key: string; value: WordItem }
   meta: { key: string; value: DatasetMeta }
   progress: { key: string; value: ItemProgress }
-  reading: { key: string; value: ReadingExercise }           // NEW
-  reading_results: { key: string; value: ReadingResult }     // NEW
+  reading: { key: string; value: ReadingExercise }
+  reading_results: { key: string; value: ReadingResult }
 }
 
 let _dbPromise: Promise<IDBPDatabase<ETDB>> | null = null
@@ -125,4 +125,29 @@ export async function saveReadingResult(res: ReadingResult) {
 export async function getReadingResult(exerciseId: string): Promise<ReadingResult | undefined> {
   const db = await getDB()
   return db.get('reading_results', exerciseId)
+}
+
+/* ===== Nuevas utilidades para items (palabras) ===== */
+
+export async function getItem(id: string): Promise<WordItem | undefined> {
+  const db = await getDB()
+  return db.get('items', id)
+}
+
+/** Inserta o actualiza un único item sin borrar el resto. */
+export async function upsertItem(item: WordItem): Promise<void> {
+  const db = await getDB()
+  await db.put('items', item)
+
+  // Actualiza meta de forma sencilla
+  const rows = await db.count('items')
+  const now = new Date().toISOString()
+  const prev = await getMeta()
+  const meta: DatasetMeta = {
+    version: prev?.version ?? 2,
+    lastSyncISO: now,
+    lastSyncDateKey: now.slice(0, 10),
+    rows,
+  }
+  await setMeta(meta)
 }

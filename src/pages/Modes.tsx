@@ -13,6 +13,7 @@ export default function Modes() {
         {/* NUEVO */}
         <ModeCard title="Reading (IA)" to="/study?mode=reading" desc="Genera un texto con tus palabras y 5 preguntas tipo test." />
         <ModeCard title="Listening (IA/YouTube)" to="/study?mode=listen" desc="Escucha y responde. IA o vídeo de YouTube." />
+        <ModeCard title="Añadir palabra" to="/add-word" desc="Crea palabras nuevas (IA opcional para completar campos)." />
       </div>
     </div>
   )
