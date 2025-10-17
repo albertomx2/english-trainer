@@ -6,25 +6,28 @@ import {
   useState,
   useCallback,
 } from 'react'
+
+// SRS local (progreso, flags):
 import {
-  getAllItems,
-  getMeta,
-  saveItems,
-  setMeta,
   getProgressMap,
   getProgress,
   setProgress,
 } from '../lib/storage'
-import { fetchAndParseXlsx, todayKey } from '../lib/xlsxLoader'
-import { applyAnswer, isDue, applyFailure } from '../lib/srs'
+
+// util solo para contadores por día (ya lo usabas)
+import { todayKey } from '../lib/xlsxLoader'
+
+// Tipos
 import type {
   WordItem,
-  DatasetMeta,
   SRSEaseQuality,
   AppTheme,
   DefaultDifficulty,
   ItemProgress,
 } from '../types'
+
+// Supabase: dataset en la nube
+import { listWords, getActiveUser } from '../lib/supa'
 
 type Verdict = 'exact' | 'near' | 'fail'
 
@@ -52,7 +55,7 @@ type AppState = {
   // sync
   lastSync: string | null
   refreshing: boolean
-  refreshFromXlsx: () => Promise<void>
+  refreshFromXlsx: () => Promise<void> // ⬅️ mantiene el nombre, ahora refresca desde Supabase
 
   // SRS
   getDueQueue: (limit: number) => Promise<WordItem[]>
@@ -202,37 +205,33 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     return items.filter(i => i.category === selectedCategory)
   }, [items, selectedCategory])
 
-  // carga inicial
-  async function loadInitial() {
-    const meta = await getMeta()
-    if (!meta || meta.lastSyncDateKey !== todayKey()) {
-      await refreshFromXlsx()
-    } else {
-      const all = await getAllItems()
-      setItems(all)
-      setLastSync(new Date(meta.lastSyncISO).toLocaleString())
+  // ==== CARGA INICIAL DESDE SUPABASE ====
+  async function loadFromCloud() {
+    const u = getActiveUser()
+    if (!u) {
+      setItems([])
+      setLastSync(null)
+      return
     }
+    const rows = await listWords(u.id)
+    setItems(rows)
+    setLastSync(new Date().toLocaleString())
   }
 
+  // Mantengo el nombre "refreshFromXlsx", pero ahora refresca de Supabase
   async function refreshFromXlsx() {
     setRefreshing(true)
     try {
-      const { items, report } = await fetchAndParseXlsx()
-      await saveItems(items)
-      const meta: DatasetMeta = {
-        version: 1,
-        lastSyncISO: new Date().toISOString(),
-        lastSyncDateKey: todayKey(),
-        rows: items.length,
-      }
-      await setMeta(meta)
-      setItems(items)
-      setLastSync(new Date(meta.lastSyncISO).toLocaleString())
-      console.info('Import:', report)
+      await loadFromCloud()
     } finally {
       setRefreshing(false)
     }
   }
+
+  useEffect(() => {
+    // al montar: carga dataset del usuario activo
+    refreshFromXlsx()
+  }, [])
 
   // cola SRS
   const getDueQueue = useCallback(async (limit: number) => {
@@ -240,7 +239,7 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     const progressMap = await getProgressMap(list.map(i => i.id))
     const due = list.filter(i => {
       const p = progressMap.get(i.id)
-      return isDue(p?.srs)
+      return (p?.srs?.nextReviewISO == null) || (new Date(p.srs!.nextReviewISO!) <= new Date())
     })
     // barajar
     for (let i = due.length - 1; i > 0; i--) {
@@ -252,7 +251,8 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
 
   const answerItem = useCallback(async (itemId: string, quality: 3|4|5, score: number) => {
     const prev = await getProgress(itemId)
-    const next = applyAnswer(prev, itemId, quality, score)
+    // @ts-ignore applyAnswer firma antigua
+    const next = (await import('../lib/srs')).applyAnswer(prev, itemId, quality, score)
     await setProgress(next)
     addPoints(score)
     incDailyCount()
@@ -260,6 +260,7 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
 
   const answerGraded = useCallback(async (itemId: string, verdict: Verdict, score: 0|2|3) => {
     const prev = await getProgress(itemId)
+    const { applyAnswer, applyFailure } = await import('../lib/srs')
     let next
     if (verdict === 'exact') {
       next = applyAnswer(prev, itemId, 5, score)
@@ -298,8 +299,6 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     await setProgress(next)
   }, [])
 
-  useEffect(() => { loadInitial() }, [])
-
   const value: AppState = {
     items,
     filteredItems,
@@ -320,7 +319,7 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
 
     lastSync,
     refreshing,
-    refreshFromXlsx,
+    refreshFromXlsx, // ahora refresca desde Supabase
 
     getDueQueue,
     answerItem,

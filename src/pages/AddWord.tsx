@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import type { WordItem, Category } from '../types'
-import { upsertItem } from '../lib/storage'
-import { enrichWordWithAI } from '../lib/ai' // usa la versión con traducción "corta"
+import { enrichWordWithAI } from '../lib/ai'
+import { getActiveUser, upsertWord } from '../lib/supa'
+import { useNavigate } from 'react-router-dom'
 
 /** Normaliza la palabra a un id estable */
 function normalizeId(s: string): string {
@@ -14,17 +15,17 @@ function normalizeId(s: string): string {
     .replace(/(^-|-$)/g, '') || 'item'
 }
 
-/** Recorta traducciones largas si el modelo se enrolla */
+/** Traducción muy corta */
 function tidyEs(s: string): string {
   let t = (s || '').trim()
-  t = t.split(/[;\n\.]/)[0]
-  t = t.split(/[,/]/)[0]
-  t = t.replace(/\(.*?\)/g, '').trim()
-  const parts = t.split(/\s+/).slice(0, 3)
-  return parts.join(' ').toLowerCase()
+  t = t.replace(/\(.*?\)/g, '')
+  t = t.split(/[;\n\.,/]/)[0]
+  t = t.split(/\s+/).slice(0, 3).join(' ')
+  return t.toLowerCase().trim()
 }
 
 export default function AddWord() {
+  const nav = useNavigate()
   const [word, setWord] = useState('')
   const [category, setCategory] = useState<Category>('Noun')
   const [seq, setSeq] = useState<string>('')
@@ -67,7 +68,6 @@ export default function AddWord() {
     setError(null)
     const w = word.trim()
     if (!w) { setError('Primero escribe la palabra.'); return }
-
     setLoadingDef(true); setLoadingEx(true); setLoadingEs(true)
     try {
       const res = await enrichWordWithAI(w)
@@ -85,25 +85,28 @@ export default function AddWord() {
     e.preventDefault()
     setError(null); setOkMsg(null)
 
+    const u = getActiveUser()
+    if (!u) { setError('No hay usuario activo. Entra de nuevo.'); return }
+
     const w = word.trim()
     if (!w) { setError('La palabra es obligatoria.'); return }
 
     const item: WordItem = {
       id: normalizeId(w),
       word: w,
-      definition_en: definition.trim(),
-      example_en: example.trim(),
+      definition_en: (definition || '').trim(),
+      example_en: (example || '').trim(),
       translation_es: tidyEs(translation),
       category,
-      seq: seq || null,
+      seq: seq ? Number(seq) : null,
     }
 
     setSaving(true)
     try {
-      await upsertItem(item)
+      await upsertWord(u.id, item)
       setOkMsg(`Guardado: ${w}`)
-      // Si tu estado global no recarga solo, refrescamos
-      setTimeout(() => window.location.reload(), 600)
+      // opcional: volver a Modos o limpiar formulario
+      setTimeout(() => nav('/modes'), 700)
     } catch (e: any) {
       setError(e?.message || 'Error guardando la palabra.')
     } finally {
@@ -226,7 +229,12 @@ export default function AddWord() {
           <button type="submit" className="btn btn-primary" disabled={saving}>
             {saving ? 'Guardando…' : 'Guardar'}
           </button>
-          <button type="button" className="btn" onClick={genAllAI} disabled={!word.trim() || loadingDef || loadingEx || loadingEs}>
+          <button
+            type="button"
+            className="btn"
+            onClick={genAllAI}
+            disabled={!word.trim() || loadingDef || loadingEx || loadingEs}
+          >
             {loadingDef || loadingEx || loadingEs ? 'IA…' : 'Rellenar todo con IA'}
           </button>
         </div>
